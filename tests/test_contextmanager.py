@@ -213,7 +213,7 @@ def test_context_manager_get_last_alert_run(
         status="success",
         execution_number=1,
         results={},
-    )
+    ).model_dump()
     context_manager_with_state.set_last_workflow_run(
         workflow_id, alert_context, alert_status
     )

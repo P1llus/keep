@@ -1,6 +1,7 @@
 import json
 import time
 from datetime import datetime, timedelta
+from sqlmodel import select
 
 import pytest
 import pytz
@@ -1389,7 +1390,7 @@ def test_alert_resolved(db_session, create_alert, workflow_manager):
     assert len(alerts_dto) == 1
     assert alerts_dto[0].status == AlertStatus.FIRING.value
 
-    incident = db_session.query(Incident).first()
+    incident = db_session.exec(select(Incident)).first()
     assert incident.status == IncidentStatus.FIRING.value
 
     # Insert the alert into workflow manager
@@ -1414,7 +1415,7 @@ def test_alert_resolved(db_session, create_alert, workflow_manager):
     assert len(alerts_dto) == 1
     assert alerts_dto[0].status == AlertStatus.RESOLVED.value
 
-    incident = db_session.query(Incident).first()
+    incident = db_session.exec(select(Incident)).first()
     assert incident.status == IncidentStatus.RESOLVED.value
 
 

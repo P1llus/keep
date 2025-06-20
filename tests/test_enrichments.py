@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 from sqlalchemy import text
+from sqlmodel import select
 from tenacity import sleep
 
 from keep.api.bl.enrichments_bl import EnrichmentsBl
@@ -870,7 +871,7 @@ def test_batch_enrichment(db_session, client, test_app, create_alert, elastic_cl
             {},
         )
 
-    alerts = db_session.query(Alert).all()
+    alerts = db_session.exec(select(Alert)).all()
 
     fingerprints = [a.fingerprint for a in alerts]
 

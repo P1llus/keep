@@ -2,6 +2,8 @@ import datetime
 import os
 import uuid
 from time import sleep
+from sqlmodel import select
+from sqlalchemy import func
 
 import pytest
 
@@ -724,11 +726,11 @@ def test_rule_multiple_alerts(db_session, create_alert):
     )
 
     # No incident yet
-    assert db_session.query(Incident).filter(Incident.is_visible == True).count() == 0
+    assert db_session.scalar(select(func.count(Incident.id)).where(Incident.is_visible == True)) == 0
     # But hidden group is there
-    assert db_session.query(Incident).filter(Incident.is_visible == False).count() == 1
-    incident = db_session.query(Incident).first()
-    alert_1 = db_session.query(Alert).order_by(Alert.timestamp.desc()).first()
+    assert db_session.scalar(select(func.count(Incident.id)).where(Incident.is_visible == False)) == 1
+    incident = db_session.exec(select(Incident).where(Incident.is_visible == False)).first() # Fetch the specific hidden incident
+    alert_1 = db_session.exec(select(Alert).order_by(Alert.timestamp.desc())).first()
 
     enrich_incidents_with_alerts(SINGLE_TENANT_UUID, [incident], db_session)
 
@@ -746,12 +748,12 @@ def test_rule_multiple_alerts(db_session, create_alert):
     )
 
     db_session.refresh(incident)
-    alert_2 = db_session.query(Alert).order_by(Alert.timestamp.desc()).first()
+    alert_2 = db_session.exec(select(Alert).order_by(Alert.timestamp.desc())).first()
 
     # Still no incident yet
-    assert db_session.query(Incident).filter(Incident.is_visible == True).count() == 0
+    assert db_session.scalar(select(func.count(Incident.id)).where(Incident.is_visible == True)) == 0
     # And still one candidate is there
-    assert db_session.query(Incident).filter(Incident.is_visible == False).count() == 1
+    assert db_session.scalar(select(func.count(Incident.id)).where(Incident.is_visible == False)) == 1
 
     enrich_incidents_with_alerts(SINGLE_TENANT_UUID, [incident], db_session)
 
@@ -769,11 +771,11 @@ def test_rule_multiple_alerts(db_session, create_alert):
         },
     )
 
-    alert_3 = db_session.query(Alert).order_by(Alert.timestamp.desc()).first()
+    alert_3 = db_session.exec(select(Alert).order_by(Alert.timestamp.desc())).first()
     enrich_incidents_with_alerts(SINGLE_TENANT_UUID, [incident], db_session)
 
     # And incident was official started
-    assert db_session.query(Incident).filter(Incident.is_visible == True).count() == 1
+    assert db_session.scalar(select(func.count(Incident.id)).where(Incident.is_visible == True)) == 1
 
     db_session.refresh(incident)
     assert incident.alerts_count == 3
@@ -819,9 +821,9 @@ def test_rule_event_groups_expires(db_session, create_alert):
     )
 
     # Still no incident yet
-    assert db_session.query(Incident).filter(Incident.is_visible == True).count() == 0
+    assert db_session.scalar(select(func.count(Incident.id)).where(Incident.is_visible == True)) == 0
     # And still one candidate is there
-    assert db_session.query(Incident).filter(Incident.is_visible == False).count() == 1
+    assert db_session.scalar(select(func.count(Incident.id)).where(Incident.is_visible == False)) == 1
 
     sleep(1)
 
@@ -835,9 +837,9 @@ def test_rule_event_groups_expires(db_session, create_alert):
     )
 
     # Still no incident yet
-    assert db_session.query(Incident).filter(Incident.is_visible == True).count() == 0
+    assert db_session.scalar(select(func.count(Incident.id)).where(Incident.is_visible == True)) == 0
     # And now two candidates is there
-    assert db_session.query(Incident).filter(Incident.is_visible == False).count() == 2
+    assert db_session.scalar(select(func.count(Incident.id)).where(Incident.is_visible == False)) == 2
 
 
 def test_at_sign(db_session):
@@ -1995,11 +1997,11 @@ def test_rule_alerts_threshold(db_session, create_alert):
     )
 
     # No incident yet
-    assert db_session.query(Incident).filter(Incident.is_visible == True).count() == 0
+    assert db_session.scalar(select(func.count(Incident.id)).where(Incident.is_visible == True)) == 0
     # But hidden group is there
-    assert db_session.query(Incident).filter(Incident.is_visible == False).count() == 1
-    incident = db_session.query(Incident).first()
-    alert_1 = db_session.query(Alert).order_by(Alert.timestamp.desc()).first()
+    assert db_session.scalar(select(func.count(Incident.id)).where(Incident.is_visible == False)) == 1
+    incident = db_session.exec(select(Incident).where(Incident.is_visible == False)).first() # Fetch the specific hidden incident
+    alert_1 = db_session.exec(select(Alert).order_by(Alert.timestamp.desc())).first()
 
     enrich_incidents_with_alerts(SINGLE_TENANT_UUID, [incident], db_session)
 
@@ -2017,10 +2019,10 @@ def test_rule_alerts_threshold(db_session, create_alert):
     )
 
     db_session.refresh(incident)
-    alert_2 = db_session.query(Alert).order_by(Alert.timestamp.desc()).first()
+    alert_2 = db_session.exec(select(Alert).order_by(Alert.timestamp.desc())).first()
 
     # And incident was official started
-    assert db_session.query(Incident).filter(Incident.is_visible == True).count() == 1
+    assert db_session.scalar(select(func.count(Incident.id)).where(Incident.is_visible == True)) == 1
 
     db_session.refresh(incident)
     assert incident.alerts_count == 1
@@ -2067,11 +2069,11 @@ def test_rule_multiple_alerts_with_threshold(db_session, create_alert):
     )
 
     # No incident yet
-    assert db_session.query(Incident).filter(Incident.is_visible == True).count() == 0
+    assert db_session.scalar(select(func.count(Incident.id)).where(Incident.is_visible == True)) == 0
     # But hidden group is there
-    assert db_session.query(Incident).filter(Incident.is_visible == False).count() == 1
-    incident = db_session.query(Incident).first()
-    alert_1 = db_session.query(Alert).order_by(Alert.timestamp.desc()).first()
+    assert db_session.scalar(select(func.count(Incident.id)).where(Incident.is_visible == False)) == 1
+    incident = db_session.exec(select(Incident).where(Incident.is_visible == False)).first() # Fetch the specific hidden incident
+    alert_1 = db_session.exec(select(Alert).order_by(Alert.timestamp.desc())).first()
 
     enrich_incidents_with_alerts(SINGLE_TENANT_UUID, [incident], db_session)
 
@@ -2089,12 +2091,12 @@ def test_rule_multiple_alerts_with_threshold(db_session, create_alert):
     )
 
     db_session.refresh(incident)
-    alert_2 = db_session.query(Alert).order_by(Alert.timestamp.desc()).first()
+    alert_2 = db_session.exec(select(Alert).order_by(Alert.timestamp.desc())).first()
 
     # Still no incident yet
-    assert db_session.query(Incident).filter(Incident.is_visible == True).count() == 0
+    assert db_session.scalar(select(func.count(Incident.id)).where(Incident.is_visible == True)) == 0
     # And still one candidate is there
-    assert db_session.query(Incident).filter(Incident.is_visible == False).count() == 1
+    assert db_session.scalar(select(func.count(Incident.id)).where(Incident.is_visible == False)) == 1
 
     enrich_incidents_with_alerts(SINGLE_TENANT_UUID, [incident], db_session)
 
@@ -2112,28 +2114,28 @@ def test_rule_multiple_alerts_with_threshold(db_session, create_alert):
         },
     )
 
-    alert_3 = db_session.query(Alert).order_by(Alert.timestamp.desc()).first()
+    alert_3 = db_session.exec(select(Alert).order_by(Alert.timestamp.desc())).first()
     enrich_incidents_with_alerts(SINGLE_TENANT_UUID, [incident], db_session)
 
     # Still no incident yet because of threshold
-    assert db_session.query(Incident).filter(Incident.is_visible == True).count() == 0
+    assert db_session.scalar(select(func.count(Incident.id)).where(Incident.is_visible == True)) == 0
     # And still one candidate is there
-    assert db_session.query(Incident).filter(Incident.is_visible == False).count() == 1
+    assert db_session.scalar(select(func.count(Incident.id)).where(Incident.is_visible == False)) == 1
 
     create_alert(
         "High Alert 2",
         AlertStatus.FIRING,
-        datetime.datetime.utcnow(),
+        datetime.datetime.now(datetime.timezone.utc),
         {
             "severity": AlertSeverity.HIGH.value,
         },
     )
 
-    alert_4 = db_session.query(Alert).order_by(Alert.timestamp.desc()).first()
+    alert_4 = db_session.exec(select(Alert).order_by(Alert.timestamp.desc())).first()
     enrich_incidents_with_alerts(SINGLE_TENANT_UUID, [incident], db_session)
 
     # And incident was official started
-    assert db_session.query(Incident).filter(Incident.is_visible == True).count() == 1
+    assert db_session.scalar(select(func.count(Incident.id)).where(Incident.is_visible == True)) == 1
 
     db_session.refresh(incident)
     assert incident.alerts_count == 4

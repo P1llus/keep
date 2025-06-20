@@ -6,12 +6,13 @@ from datetime import datetime, timedelta
 
 import pytest
 import pytz
-from sqlalchemy import text
+from sqlalchemy import func, text
+from sqlmodel import select
 
 from keep.api.core.db import get_last_alerts
 from keep.api.core.dependencies import SINGLE_TENANT_UUID
-from keep.api.models.alert import DeduplicationRuleDto, AlertStatus
-from keep.api.models.db.alert import AlertDeduplicationRule, AlertDeduplicationEvent, Alert
+from keep.api.models.alert import AlertStatus
+from keep.api.models.db.alert import AlertDeduplicationRule, Alert
 from keep.api.utils.enrichment_helpers import convert_db_alerts_to_dto_alerts
 from keep.providers.providers_factory import ProvidersFactory
 from tests.fixtures.client import client, setup_api_key, test_app  # noqa
@@ -885,7 +886,7 @@ def test_full_deduplication_last_received(db_session, create_alert):
         },
     )
 
-    assert db_session.query(Alert).count() == 1
+    assert db_session.exec(select(func.count(Alert.id))).scalar_one() == 1
     alerts = get_last_alerts(SINGLE_TENANT_UUID)
     alerts_dto = convert_db_alerts_to_dto_alerts(alerts)
 
@@ -901,7 +902,7 @@ def test_full_deduplication_last_received(db_session, create_alert):
         },
     )
 
-    assert db_session.query(Alert).count() == 1
+    assert db_session.exec(select(func.count(Alert.id))).scalar_one() == 1
     alerts = get_last_alerts(SINGLE_TENANT_UUID)
     alerts_dto = convert_db_alerts_to_dto_alerts(alerts)
 

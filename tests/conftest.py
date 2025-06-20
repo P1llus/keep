@@ -16,7 +16,7 @@ from pytest_docker.plugin import get_docker_services
 from sqlalchemy import event, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine, select
 from starlette_context import context, request_cycle_context
 from playwright.sync_api import Page
 
@@ -612,7 +612,7 @@ def setup_alerts(elastic_client, db_session, request):
     db_session.add_all(alerts)
     db_session.commit()
 
-    existed_last_alerts = db_session.query(LastAlert).all()
+    existed_last_alerts = db_session.exec(select(LastAlert)).all()
     existed_last_alerts_dict = {
         last_alert.fingerprint: last_alert for last_alert in existed_last_alerts
     }
@@ -679,7 +679,7 @@ def setup_stress_alerts_no_elastic(db_session):
         db_session.add_all(alerts)
         db_session.commit()
 
-        existed_last_alerts = db_session.query(LastAlert).all()
+        existed_last_alerts = db_session.exec(select(LastAlert)).all()
         existed_last_alerts_dict = {
             last_alert.fingerprint: last_alert for last_alert in existed_last_alerts
         }
