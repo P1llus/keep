@@ -3,7 +3,7 @@ import json
 import logging
 
 import celpy
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from keep.api.core.db import get_session_sync
 from keep.api.models.action_type import ActionType
@@ -20,11 +20,12 @@ class MaintenanceWindowsBl:
         self.tenant_id = tenant_id
         self.session = session if session else get_session_sync()
         self.maintenance_rules: list[MaintenanceWindowRule] = (
-            self.session.query(MaintenanceWindowRule)
-            .filter(MaintenanceWindowRule.tenant_id == tenant_id)
-            .filter(MaintenanceWindowRule.enabled == True)
-            .filter(MaintenanceWindowRule.end_time >= datetime.datetime.now())
-            .all()
+            self.session.exec(
+                select(MaintenanceWindowRule)
+                .where(MaintenanceWindowRule.tenant_id == tenant_id)
+                .where(MaintenanceWindowRule.enabled == True)
+                .where(MaintenanceWindowRule.end_time >= datetime.datetime.now())
+            ).all()
         )
 
     def check_if_alert_in_maintenance_windows(self, alert: AlertDto) -> bool:

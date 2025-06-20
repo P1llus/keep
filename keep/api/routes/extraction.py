@@ -3,7 +3,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from keep.api.bl.enrichments_bl import EnrichmentsBl
 from keep.api.core.db import get_alert_by_event_id, get_session
@@ -55,7 +55,7 @@ def create_extraction_rule(
     session.add(new_rule)
     session.commit()
     session.refresh(new_rule)
-    return ExtractionRuleDtoOut(**new_rule.dict())
+    return ExtractionRuleDtoOut(**new_rule.model_dump())
 
 
 @router.put("/{rule_id}", description="Update an existing extraction rule")
@@ -68,14 +68,13 @@ def update_extraction_rule(
     session: Session = Depends(get_session),
 ) -> ExtractionRuleDtoOut:
     logger.info("Updating an extraction rule")
-    rule: ExtractionRule | None = (
-        session.query(ExtractionRule)
-        .filter(
+    rule: ExtractionRule | None = session.exec(
+        select(ExtractionRule)
+        .where(
             ExtractionRule.id == rule_id,
             ExtractionRule.tenant_id == authenticated_entity.tenant_id,
         )
-        .first()
-    )
+    ).first()
     if rule is None:
         raise HTTPException(status_code=404, detail="Extraction rule not found")
 
@@ -84,7 +83,7 @@ def update_extraction_rule(
     rule.updated_by = authenticated_entity.email
     session.commit()
     session.refresh(rule)
-    return ExtractionRuleDtoOut(**rule.dict())
+    return ExtractionRuleDtoOut(**rule.model_dump())
 
 
 @router.delete("/{rule_id}", description="Delete an extraction rule")

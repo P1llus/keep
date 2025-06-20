@@ -158,12 +158,13 @@ class EnrichmentsBl:
             },
         )
         rules: list[ExtractionRule] = rules or (
-            self.db_session.query(ExtractionRule)
-            .filter(ExtractionRule.tenant_id == self.tenant_id)
-            .filter(ExtractionRule.disabled == False)
-            .filter(ExtractionRule.pre == pre)
-            .order_by(ExtractionRule.priority.desc())
-            .all()
+            self.db_session.exec(
+                select(ExtractionRule)
+                .where(ExtractionRule.tenant_id == self.tenant_id)
+                .where(ExtractionRule.disabled == False)
+                .where(ExtractionRule.pre == pre)
+                .order_by(ExtractionRule.priority.desc())
+            ).all()
         )
 
         if not rules:
@@ -316,11 +317,12 @@ class EnrichmentsBl:
 
         # Retrieve all active mapping rules for the current tenant, ordered by priority
         rules: list[MappingRule] = (
-            self.db_session.query(MappingRule)
-            .filter(MappingRule.tenant_id == self.tenant_id)
-            .filter(MappingRule.disabled == False)
-            .order_by(MappingRule.priority.desc())
-            .all()
+            self.db_session.exec(
+                select(MappingRule)
+                .where(MappingRule.tenant_id == self.tenant_id)
+                .where(MappingRule.disabled == False)
+                .order_by(MappingRule.priority.desc())
+            ).all()
         )
 
         if not rules:

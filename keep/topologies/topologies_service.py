@@ -2,6 +2,7 @@ import json
 import logging
 from typing import List, Optional
 from uuid import UUID
+from sqlalchemy import delete
 
 from pydantic import ValidationError
 from sqlalchemy import and_, or_, exists
@@ -343,9 +344,11 @@ class TopologiesService:
         new_service_ids = set(service.id for service in application.services)
 
         # Remove existing links not in the update request
-        session.query(TopologyServiceApplication).where(
-            TopologyServiceApplication.application_id == application_id
-        ).where(TopologyServiceApplication.service_id.not_in(new_service_ids)).delete()
+        delete_stale_links_stmt = delete(TopologyServiceApplication).where(
+            TopologyServiceApplication.application_id == application_id,
+            TopologyServiceApplication.service_id.not_in(new_service_ids)
+        )
+        session.execute(delete_stale_links_stmt)
 
         # Add new links
         existing_links = session.exec(
@@ -524,42 +527,44 @@ class TopologiesService:
     @staticmethod
     def delete_services(service_ids: list[int], tenant_id: str, session: Session):
         try:
-
             # Asserting that all the services that we are trying to delete were created manually, if this assertion
             # fails we do not proceed with deletion at all
             if validate_non_manual_exists(
-                service_ids=service_ids,
-                session=session,
-                tenant_id=tenant_id,
+                service_ids=service_ids, session=session, tenant_id=tenant_id
             ):
-                raise ServiceNotManualException()
+                raise ServiceNotManualException(
+                    "Cannot delete services that were not created manually."
+                )
 
             # Deleting all the dependencies first
-            session.query(TopologyServiceDependency).filter(
-                TopologyServiceDependency.service.has(
-                    and_(
+            # This targets dependencies where either the service_id or depends_on_service_id is in the list of services to be deleted,
+            # and the service itself belongs to the tenant.
+            delete_deps_stmt = delete(TopologyServiceDependency).where(
+                and_(
+                    exists().where(
+                        TopologyService.id == TopologyServiceDependency.service_id,
                         TopologyService.tenant_id == tenant_id,
-                        or_(
-                            TopologyServiceDependency.service_id.in_(service_ids),
-                            TopologyServiceDependency.depends_on_service_id.in_(
-                                service_ids
-                            ),
-                        ),
-                    )
+                    ),
+                    or_(
+                        TopologyServiceDependency.service_id.in_(service_ids),
+                        TopologyServiceDependency.depends_on_service_id.in_(service_ids),
+                    ),
                 )
-            ).delete(synchronize_session=False)
-
-            deleted_count = (
-                session.query(TopologyService)
-                .filter(
-                    TopologyService.id.in_(service_ids),
-                    TopologyService.tenant_id == tenant_id,
-                )
-                .delete(synchronize_session=False)  # Efficient batch delete
             )
+            session.execute(delete_deps_stmt.execution_options(synchronize_session=False))
+
+            # Delete the services themselves
+            delete_services_stmt = delete(TopologyService).where(
+                TopologyService.id.in_(service_ids),
+                TopologyService.tenant_id == tenant_id,
+            )
+            result = session.execute(delete_services_stmt.execution_options(synchronize_session=False))
+            deleted_count = result.rowcount
 
             if deleted_count == 0:
-                raise ServiceNotFoundException("No services found for the given IDs.")
+                raise ServiceNotFoundException(
+                    "No services found for the given IDs or they were already deleted."
+                )
 
             session.commit()
         except Exception as e:
@@ -710,28 +715,34 @@ class TopologiesService:
         """Removes all services and applications for a given tenant before importing a new topology."""
         try:
             # Delete all dependencies for this tenant
-            session.query(TopologyServiceDependency).filter(
-                TopologyServiceDependency.service.has(
+            delete_deps_stmt = delete(TopologyServiceDependency).where(
+                exists().where(
+                    TopologyService.id == TopologyServiceDependency.service_id,
                     TopologyService.tenant_id == tenant_id
                 )
-            ).delete(synchronize_session=False)
+            )
+            session.execute(delete_deps_stmt.execution_options(synchronize_session=False))
     
             # Delete all service-application links for this tenant
-            session.query(TopologyServiceApplication).filter(
-                TopologyServiceApplication.service.has(
+            delete_app_links_stmt = delete(TopologyServiceApplication).where(
+                exists().where(
+                    TopologyService.id == TopologyServiceApplication.service_id,
                     TopologyService.tenant_id == tenant_id
                 )
-            ).delete(synchronize_session=False)
+            )
+            session.execute(delete_app_links_stmt.execution_options(synchronize_session=False))
     
             # Delete all applications for this tenant
-            session.query(TopologyApplication).filter(
+            delete_applications_stmt = delete(TopologyApplication).where(
                 TopologyApplication.tenant_id == tenant_id
-            ).delete(synchronize_session=False)
+            )
+            session.execute(delete_applications_stmt.execution_options(synchronize_session=False))
     
             # Delete all services for this tenant
-            session.query(TopologyService).filter(
+            delete_services_stmt = delete(TopologyService).where(
                 TopologyService.tenant_id == tenant_id
-            ).delete(synchronize_session=False)
+            )
+            session.execute(delete_services_stmt.execution_options(synchronize_session=False))
     
             session.commit()
         except Exception as e:

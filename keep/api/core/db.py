@@ -39,7 +39,7 @@ from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError, OperationalError
-from sqlalchemy.orm import foreign, joinedload, subqueryload
+from sqlalchemy.orm import joinedload, subqueryload
 from sqlalchemy.orm.exc import StaleDataError
 from sqlalchemy.sql import exists, expression
 from sqlalchemy.sql.functions import count
@@ -1238,13 +1238,19 @@ def get_last_workflow_executions(tenant_id: str, limit=20):
 
 def get_workflow_executions_count(tenant_id: str):
     with Session(engine) as session:
-        query = session.query(WorkflowExecution).filter(
-            WorkflowExecution.tenant_id == tenant_id,
-        )
-
         return {
-            "success": query.filter(WorkflowExecution.status == "success").count(),
-            "other": query.filter(WorkflowExecution.status != "success").count(),
+            "success": session.scalar(
+                select(func.count(WorkflowExecution.id)).where(
+                    WorkflowExecution.tenant_id == tenant_id,
+                    WorkflowExecution.status == "success",
+                )
+            ),
+            "other": session.scalar(
+                select(func.count(WorkflowExecution.id)).where(
+                    WorkflowExecution.tenant_id == tenant_id,
+                    WorkflowExecution.status != "success",
+                )
+            ),
         }
 
 
@@ -1917,28 +1923,28 @@ def get_alerts_by_fingerprint(
     """
     with Session(engine) as session:
         # Create the query
-        query = session.query(Alert)
+        statement = select(Alert)
 
         # Apply subqueryload to force-load the alert_enrichment relationship
-        query = query.options(subqueryload(Alert.alert_enrichment))
+        statement = statement.options(subqueryload(Alert.alert_enrichment))
 
         if with_alert_instance_enrichment:
-            query = query.options(subqueryload(Alert.alert_instance_enrichment))
+            statement = statement.options(subqueryload(Alert.alert_instance_enrichment))
 
         # Filter by tenant_id
-        query = query.filter(Alert.tenant_id == tenant_id)
+        statement = statement.filter(Alert.tenant_id == tenant_id)
 
-        query = query.filter(Alert.fingerprint == fingerprint)
+        statement = statement.filter(Alert.fingerprint == fingerprint)
 
-        query = query.order_by(Alert.timestamp.desc())
+        statement = statement.order_by(Alert.timestamp.desc())
 
         if status:
-            query = query.filter(func.json_extract(Alert.event, "$.status") == status)
+            statement = statement.filter(func.json_extract(Alert.event, "$.status") == status)
 
         if limit:
-            query = query.limit(limit)
+            statement = statement.limit(limit)
         # Execute the query
-        alerts = query.all()
+        alerts = session.exec(statement).all()
 
     return alerts
 
@@ -2450,13 +2456,13 @@ def get_rule(tenant_id, rule_id):
 
 def get_rule_incidents_count_db(tenant_id):
     with Session(engine) as session:
-        query = (
-            session.query(Incident.rule_id, func.count(Incident.id))
-            .select_from(Incident)
-            .filter(Incident.tenant_id == tenant_id, col(Incident.rule_id).isnot(None))
+        statement = (
+            select(Incident.rule_id, func.count(Incident.id))
+            .where(Incident.tenant_id == tenant_id, Incident.rule_id.is_not(None))
             .group_by(Incident.rule_id)
         )
-        return dict(query.all())
+        results = session.exec(statement).all()
+        return dict(results)
 
 
 def get_rule_distribution(tenant_id, minute=False):
@@ -2468,41 +2474,42 @@ def get_rule_distribution(tenant_id, minute=False):
         # Check the dialect
         if session.bind.dialect.name == "mysql":
             time_format = "%Y-%m-%d %H:%i" if minute else "%Y-%m-%d %H"
-            timestamp_format = func.date_format(
+            timestamp_format_label = func.date_format(
                 LastAlertToIncident.timestamp, time_format
-            )
+            ).label("time")
         elif session.bind.dialect.name == "postgresql":
             time_format = "YYYY-MM-DD HH:MI" if minute else "YYYY-MM-DD HH"
-            timestamp_format = func.to_char(LastAlertToIncident.timestamp, time_format)
+            timestamp_format_label = func.to_char(LastAlertToIncident.timestamp, time_format).label("time")
         elif session.bind.dialect.name == "sqlite":
             time_format = "%Y-%m-%d %H:%M" if minute else "%Y-%m-%d %H"
-            timestamp_format = func.strftime(time_format, LastAlertToIncident.timestamp)
+            timestamp_format_label = func.strftime(time_format, LastAlertToIncident.timestamp).label("time")
         else:
             raise ValueError("Unsupported database dialect")
-        # Construct the query
-        query = (
-            session.query(
+        
+        # Construct the statement
+        statement = (
+            select(
                 Rule.id.label("rule_id"),
                 Rule.name.label("rule_name"),
                 Incident.id.label("incident_id"),
                 Incident.rule_fingerprint.label("rule_fingerprint"),
-                timestamp_format.label("time"),
+                timestamp_format_label,
                 func.count(LastAlertToIncident.fingerprint).label("hits"),
             )
             .join(Incident, Rule.id == Incident.rule_id)
             .join(LastAlertToIncident, Incident.id == LastAlertToIncident.incident_id)
-            .filter(
+            .where(
                 LastAlertToIncident.deleted_at == NULL_FOR_DELETED_AT,
                 LastAlertToIncident.timestamp >= seven_days_ago,
+                Rule.tenant_id == tenant_id
             )
-            .filter(Rule.tenant_id == tenant_id)  # Filter by tenant_id
             .group_by(
-                Rule.id, "rule_name", Incident.id, "rule_fingerprint", "time"
-            )  # Adjusted here
-            .order_by("time")
+                Rule.id, Rule.name, Incident.id, Incident.rule_fingerprint, timestamp_format_label
+            )
+            .order_by(timestamp_format_label)
         )
 
-        results = query.all()
+        results = session.exec(statement).all()
 
         # Convert the results into a dictionary
         rule_distribution = {}
@@ -2907,21 +2914,20 @@ def get_linked_providers(tenant_id: str) -> List[Tuple[str, str, datetime]]:
 
 def is_linked_provider(tenant_id: str, provider_id: str) -> bool:
     with Session(engine) as session:
-        query = session.query(Alert.provider_id)
+        statement = select(Alert.provider_id)
 
         # Add FORCE INDEX hint only for MySQL
         if engine.dialect.name == "mysql":
-            query = query.with_hint(Alert, "FORCE INDEX (idx_alert_tenant_provider)")
+            statement = statement.with_hint(Alert, "FORCE INDEX (idx_alert_tenant_provider)")
 
-        linked_provider = (
-            query.outerjoin(Provider, Alert.provider_id == Provider.id)
+        linked_provider = session.exec(
+            statement.outerjoin(Provider, Alert.provider_id == Provider.id)
             .filter(
                 Alert.tenant_id == tenant_id,
                 Alert.provider_id == provider_id,
-                Provider.id == None,
+                Provider.id == None,  # This condition checks for non-linked providers
             )
-            .first()
-        )
+        ).first()
 
     return linked_provider is not None
 
@@ -3009,8 +3015,8 @@ def get_provider_distribution(
 
         else:
             # Query for alert distribution grouped by provider
-            query = (
-                session.query(
+            statement = (
+                select(
                     Alert.provider_id,
                     Alert.provider_type,
                     timestamp_format.label("time"),
@@ -3022,7 +3028,7 @@ def get_provider_distribution(
                 .order_by(Alert.provider_id, Alert.provider_type, "time")
             )
 
-            results = query.all()
+            results = session.exec(statement).all()
 
             provider_distribution = {}
 
@@ -3503,7 +3509,7 @@ def update_action(
             .where(Action.tenant_id == tenant_id)
         ).first()
         if found_action:
-            for key, value in update_payload.dict(exclude_unset=True).items():
+            for key, value in update_payload.model_dump(exclude_unset=True).items():
                 if hasattr(found_action, key):
                     setattr(found_action, key, value)
             session.commit()
@@ -3917,48 +3923,50 @@ def get_last_incidents(
         List[Incident]: A list of Incident objects.
     """
     with Session(engine) as session:
-        query = session.query(
-            Incident,
-        ).filter(
+        statement = select(Incident).where(
             Incident.tenant_id == tenant_id,
-            Incident.is_candidate == is_candidate,
-            Incident.is_visible == True,
+            Incident.is_candidate == is_candidate, 
+            Incident.is_visible.is_(True),
         )
 
         if allowed_incident_ids:
-            query = query.filter(Incident.id.in_(allowed_incident_ids))
+            statement = statement.where(Incident.id.in_(allowed_incident_ids))
 
         if is_predicted is not None:
-            query = query.filter(Incident.is_predicted == is_predicted)
+            statement = statement.where(Incident.is_predicted == is_predicted)
 
         if timeframe:
-            query = query.filter(
+            statement = statement.where(
                 Incident.start_time
                 >= datetime.now(tz=timezone.utc) - timedelta(days=timeframe)
             )
 
         if upper_timestamp and lower_timestamp:
-            query = query.filter(
-                col(Incident.last_seen_time).between(lower_timestamp, upper_timestamp)
+            statement = statement.where(
+                Incident.last_seen_time.between(lower_timestamp, upper_timestamp)
             )
         elif upper_timestamp:
-            query = query.filter(Incident.last_seen_time <= upper_timestamp)
+            statement = statement.where(Incident.last_seen_time <= upper_timestamp)
         elif lower_timestamp:
-            query = query.filter(Incident.last_seen_time >= lower_timestamp)
+            statement = statement.where(Incident.last_seen_time >= lower_timestamp)
 
         if filters:
-            query = apply_incident_filters(session, filters, query)
+            # IMPORTANT: apply_incident_filters needs to be refactored to accept and return a Select statement
+            statement = apply_incident_filters(session, filters, statement)
+
+        # Create a statement for counting that includes all filters applied so far.
+        # This count_statement should not include sorting, limit, or offset from the main statement.
+        count_statement = select(func.count()).select_from(statement.alias("count_subquery"))
+        total_count = session.scalar(count_statement)
 
         if sorting:
-            query = query.order_by(sorting.get_order_by(Incident))
+            statement = statement.order_by(sorting.get_order_by(Incident))
 
-        total_count = query.count()
-
-        # Order by start_time in descending order and limit the results
-        query = query.limit(limit).offset(offset)
+        # Apply limit and offset to the main statement for fetching incidents
+        statement = statement.limit(limit).offset(offset)
 
         # Execute the query
-        incidents = query.all()
+        incidents = session.exec(statement).all()
 
         if with_alerts:
             enrich_incidents_with_alerts(tenant_id, incidents, session)
@@ -3976,8 +3984,8 @@ def get_incident_by_id(
     if isinstance(incident_id, str):
         incident_id = __convert_to_uuid(incident_id, should_raise=True)
     with existed_or_new_session(session) as session:
-        query = (
-            session.query(
+        statement = (
+            select(
                 Incident,
                 AlertEnrichment,
             )
@@ -3985,16 +3993,16 @@ def get_incident_by_id(
                 AlertEnrichment,
                 and_(
                     Incident.tenant_id == AlertEnrichment.tenant_id,
-                    cast(col(Incident.id), String)
-                    == foreign(AlertEnrichment.alert_fingerprint),
+                    cast(Incident.id, String)
+                    == AlertEnrichment.alert_fingerprint, # Assuming direct comparison after cast
                 ),
             )
-            .filter(
+            .where(
                 Incident.tenant_id == tenant_id,
                 Incident.id == incident_id,
             )
         )
-        incident_with_enrichments = query.first()
+        incident_with_enrichments = session.exec(statement).first()
         if incident_with_enrichments:
             incident, enrichments = incident_with_enrichments
             if with_alerts:
@@ -4191,9 +4199,8 @@ def get_incident_alerts_and_links_by_incident_id(
     include_unlinked: bool = False,
 ) -> tuple[List[tuple[Alert, LastAlertToIncident]], int]:
     with existed_or_new_session(session) as session:
-
-        query = (
-            session.query(
+        statement = (
+            select(
                 Alert,
                 LastAlertToIncident,
             )
@@ -4206,24 +4213,30 @@ def get_incident_alerts_and_links_by_incident_id(
                 ),
             )
             .join(Alert, LastAlert.alert_id == Alert.id)
-            .filter(
+            .where(
                 LastAlertToIncident.tenant_id == tenant_id,
                 LastAlertToIncident.incident_id == incident_id,
             )
-            .order_by(col(LastAlert.timestamp).desc())
-            .options(joinedload(Alert.alert_enrichment))
         )
         if not include_unlinked:
-            query = query.filter(
+            statement = statement.where(
                 LastAlertToIncident.deleted_at == NULL_FOR_DELETED_AT,
             )
 
-    total_count = query.count()
+        # Statement for counting (all filters applied, no ordering/limit/offset yet)
+        statement_for_count = statement
+        count_query = select(func.count()).select_from(statement_for_count.alias("count_subquery"))
+        total_count = session.scalar(count_query)
 
-    if limit is not None and offset is not None:
-        query = query.limit(limit).offset(offset)
+        # Apply ordering and options to the main statement for data retrieval
+        statement = statement.order_by(LastAlert.timestamp.desc())
+        statement = statement.options(joinedload(Alert.alert_enrichment))
 
-    return query.all(), total_count
+        if limit is not None and offset is not None:
+            statement = statement.limit(limit).offset(offset)
+
+        results = session.exec(statement).all()
+        return results, total_count
 
 
 def get_incident_alerts_by_incident_id(*args, **kwargs) -> tuple[List[Alert], int]:
@@ -4452,7 +4465,7 @@ def add_alerts_to_incident(
                         LastAlertToIncident.tenant_id == tenant_id,
                         LastAlertToIncident.incident_id == incident.id,
                     )
-                ).subquery()
+                ).scalar_subquery()
             else:
                 alerts_count = alerts_data_for_incident["count"]
 
@@ -4537,8 +4550,8 @@ def get_last_alerts_for_incidents(
     incident_ids: List[str | UUID],
 ) -> Dict[str, List[Alert]]:
     with Session(engine) as session:
-        query = (
-            session.query(
+        statement = (
+            select(
                 Alert,
                 LastAlertToIncident.incident_id,
             )
@@ -4558,7 +4571,7 @@ def get_last_alerts_for_incidents(
             .order_by(Alert.timestamp.desc())
         )
 
-        alerts = query.all()
+        alerts = session.exec(statement).all()
 
     incidents_alerts = defaultdict(list)
     for alert, incident_id in alerts:
@@ -4584,20 +4597,21 @@ def remove_alerts_to_incident_by_incident_id(
             return None
 
         # Removing alerts-to-incident relation for provided alerts_ids
-        deleted = (
-            session.query(LastAlertToIncident)
+        update_values = {
+            "deleted_at": datetime.now(datetime.now().astimezone().tzinfo),
+        }
+        statement = (
+            update(LastAlertToIncident)
             .where(
                 LastAlertToIncident.deleted_at == NULL_FOR_DELETED_AT,
                 LastAlertToIncident.tenant_id == tenant_id,
                 LastAlertToIncident.incident_id == incident.id,
                 col(LastAlertToIncident.fingerprint).in_(fingerprints),
             )
-            .update(
-                {
-                    "deleted_at": datetime.now(datetime.now().astimezone().tzinfo),
-                }
-            )
+            .values(update_values)
         )
+        result = session.execute(statement)
+        deleted = result.rowcount
         session.commit()
 
         # Getting aggregated data for incidents for alerts which just was removed
@@ -4738,7 +4752,7 @@ def remove_alerts_to_incident_by_incident_id(
                 LastAlertToIncident.tenant_id == tenant_id,
                 LastAlertToIncident.incident_id == incident.id,
             )
-        ).subquery()
+        ).scalar_subquery()
 
         session.exec(
             update(Incident)
@@ -5294,10 +5308,12 @@ def is_all_alerts_in_status(
         )
         status_field = get_json_extract_field(session, Alert.event, "status")
 
-        subquery = (
+        # Initial select statement for the subquery logic
+        subquery_select = (
             select(
                 enriched_status_field.label("enriched_status"),
                 status_field.label("status"),
+                LastAlert.tenant_id
             )
             .select_from(LastAlert)
             .join(Alert, LastAlert.alert_id == Alert.id)
@@ -5311,40 +5327,41 @@ def is_all_alerts_in_status(
         )
 
         if fingerprints:
-            subquery = subquery.where(LastAlert.fingerprint.in_(fingerprints))
+            subquery_select = subquery_select.where(LastAlert.fingerprint.in_(fingerprints))
 
         if incident:
-            subquery = subquery.join(
+            # Ensure LastAlert.tenant_id is selected if not already, for the join condition
+            subquery_select = subquery_select.join(
                 LastAlertToIncident,
                 and_(
-                    LastAlertToIncident.tenant_id == LastAlert.tenant_id,
+                    LastAlertToIncident.tenant_id == LastAlert.tenant_id, # Relies on LastAlert.tenant_id being part of subquery_select or accessible
                     LastAlertToIncident.fingerprint == LastAlert.fingerprint,
                 ),
             ).where(
                 LastAlertToIncident.deleted_at == NULL_FOR_DELETED_AT,
                 LastAlertToIncident.incident_id == incident.id,
             )
+        
+        # Alias the fully constructed select statement to use as a subquery
+        subquery_aliased = subquery_select.subquery()
 
-        subquery = subquery.subquery()
-
-        not_in_status_exists = session.query(
-            exists(
-                select(
-                    subquery.c.enriched_status,
-                    subquery.c.status,
-                )
-                .select_from(subquery)
-                .where(
-                    or_(
-                        subquery.c.enriched_status != status.value,
-                        and_(
-                            subquery.c.enriched_status.is_(None),
-                            subquery.c.status != status.value,
-                        ),
-                    )
+        # Construct the exists statement using the aliased subquery
+        exists_statement = exists(
+            select(1) # Select anything, e.g., 1 or subquery_aliased.c.status
+            .select_from(subquery_aliased)
+            .where(
+                or_(
+                    subquery_aliased.c.enriched_status != status.value,
+                    and_(
+                        subquery_aliased.c.enriched_status.is_(None),
+                        subquery_aliased.c.status != status.value,
+                    ),
                 )
             )
-        ).scalar()
+        )
+        
+        # Execute the exists query
+        not_in_status_exists = session.scalar(select(exists_statement))
 
         return not not_in_status_exists
 
